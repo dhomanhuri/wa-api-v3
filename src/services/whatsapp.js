@@ -100,7 +100,7 @@ class WhatsAppService {
         try {
           // Only process messages that are not from us
           if (!message.key.fromMe) {
-            await this.webhookService.sendMessageReceivedWebhook(message);
+            await this.webhookService.sendMessageReceivedWebhook(message, this.sock);
           }
         } catch (error) {
           this.logger.error('Failed to process incoming message webhook:', error.message);

@@ -231,9 +231,16 @@ Dikirim ketika ada pesan masuk:
     "messageId": "message_id_here",
     "from": "6281234567890@s.whatsapp.net",
     "timestamp": 1642512000000,
-    "messageType": "text",
+    "messageType": "image",
     "content": {
-      "text": "Hello from WhatsApp!"
+      "caption": "Ini adalah gambar",
+      "mimetype": "image/jpeg",
+      "mediaDownloaded": true,
+      "filename": "image_message_id_1642512000000.jpg",
+      "filepath": "./media/image_message_id_1642512000000.jpg",
+      "fileSize": 245760,
+      "downloadUrl": "/media/image_message_id_1642512000000.jpg",
+      "base64": "iVBORw0KGgoAAAANSUhEUgAA..."
     },
     "sender": {
       "jid": "6281234567890@s.whatsapp.net",
@@ -299,6 +306,39 @@ Dikirim ketika terjadi error:
 - **Retry**: 3 kali dengan exponential backoff (2s, 4s, 8s)
 - **Headers**: `Content-Type: application/json`, `User-Agent: WhatsApp-API-Webhook/1.0.0`
 - **Method**: POST
+
+### Media Download Feature
+
+Untuk pesan media (gambar, video, audio, dokumen, sticker), webhook akan:
+
+1. **Download media asli** (bukan thumbnail)
+2. **Simpan ke folder `./media/`**
+3. **Kirim informasi lengkap** dalam webhook:
+   - `mediaDownloaded`: true/false
+   - `filename`: nama file yang disimpan
+   - `fileSize`: ukuran file dalam bytes
+   - `downloadUrl`: URL untuk mengakses file (`/media/filename`)
+   - `base64`: media dalam format base64
+   - `mimeType`: tipe MIME file
+
+#### Akses Media Files
+
+Media files dapat diakses melalui:
+```bash
+# Contoh akses gambar
+curl http://localhost:3000/media/image_message_id_1642512000000.jpg
+
+# Atau langsung di browser
+http://localhost:3000/media/image_message_id_1642512000000.jpg
+```
+
+#### Supported Media Types
+
+- **Images**: JPG, PNG, GIF, WebP
+- **Videos**: MP4, WebM, AVI
+- **Audio**: MP3, WAV, OGG
+- **Documents**: PDF, DOC, DOCX, dll
+- **Stickers**: WebP format
 
 ### Session Management
 

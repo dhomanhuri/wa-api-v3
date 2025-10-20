@@ -1,5 +1,8 @@
 const axios = require('axios');
 const { apiLogger } = require('../utils/logger');
+const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+const fs = require('fs');
+const path = require('path');
 
 class WebhookService {
   constructor() {
@@ -7,6 +10,12 @@ class WebhookService {
     this.maxRetries = 3;
     this.timeout = 10000; // 10 seconds
     this.enabled = !!this.webhookUrl;
+    this.mediaDir = './media'; // Directory untuk menyimpan media
+    
+    // Create media directory if it doesn't exist
+    if (!fs.existsSync(this.mediaDir)) {
+      fs.mkdirSync(this.mediaDir, { recursive: true });
+    }
     
     if (this.enabled) {
       apiLogger.info(`Webhook service initialized with URL: ${this.webhookUrl}`);
@@ -78,13 +87,29 @@ class WebhookService {
     };
   }
 
-  async sendMessageReceivedWebhook(messageData) {
+  async sendMessageReceivedWebhook(messageData, sock = null) {
+    const messageType = this.getMessageType(messageData.message);
+    let content = this.extractMessageContent(messageData.message);
+    
+    // Download media if it's a media message
+    if (sock && this.isMediaMessage(messageType)) {
+      try {
+        const mediaInfo = await this.downloadMedia(messageData, sock);
+        if (mediaInfo) {
+          content = { ...content, ...mediaInfo };
+        }
+      } catch (error) {
+        apiLogger.error('Failed to download media:', error.message);
+        // Continue with webhook even if media download fails
+      }
+    }
+
     const webhookData = {
       messageId: messageData.key.id,
       from: messageData.key.remoteJid,
       timestamp: messageData.messageTimestamp,
-      messageType: this.getMessageType(messageData.message),
-      content: this.extractMessageContent(messageData.message),
+      messageType: messageType,
+      content: content,
       sender: {
         jid: messageData.key.remoteJid,
         pushName: messageData.pushName || 'Unknown'
@@ -207,6 +232,131 @@ class WebhookService {
 
   getWebhookUrl() {
     return this.webhookUrl;
+  }
+
+  // Helper method to check if message type is media
+  isMediaMessage(messageType) {
+    const mediaTypes = ['image', 'video', 'audio', 'document', 'sticker'];
+    return mediaTypes.includes(messageType);
+  }
+
+  // Download media from WhatsApp message
+  async downloadMedia(messageData, sock) {
+    try {
+      const messageType = this.getMessageType(messageData.message);
+      const messageId = messageData.key.id;
+      
+      apiLogger.info(`Downloading media for message ${messageId}, type: ${messageType}`);
+      
+      // Download media using Baileys
+      const buffer = await downloadMediaMessage(
+        messageData,
+        'buffer',
+        {},
+        {
+          logger: apiLogger,
+          reuploadRequest: sock.updateMediaMessage
+        }
+      );
+
+      if (!buffer) {
+        apiLogger.warn(`No media buffer received for message ${messageId}`);
+        return null;
+      }
+
+      // Generate filename
+      const timestamp = Date.now();
+      const extension = this.getFileExtension(messageType, messageData.message);
+      const filename = `${messageType}_${messageId}_${timestamp}.${extension}`;
+      const filepath = path.join(this.mediaDir, filename);
+
+      // Save media to file
+      fs.writeFileSync(filepath, buffer);
+
+      // Get file info
+      const stats = fs.statSync(filepath);
+      
+      apiLogger.info(`Media downloaded successfully: ${filename} (${stats.size} bytes)`);
+
+      return {
+        mediaDownloaded: true,
+        filename: filename,
+        filepath: filepath,
+        fileSize: stats.size,
+        mimeType: this.getMimeType(messageType, messageData.message),
+        downloadUrl: `/media/${filename}`, // URL untuk akses file
+        base64: buffer.toString('base64') // Base64 encoded media
+      };
+
+    } catch (error) {
+      apiLogger.error('Error downloading media:', error.message);
+      return {
+        mediaDownloaded: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Get file extension based on message type and content
+  getFileExtension(messageType, message) {
+    if (messageType === 'image') {
+      const mimetype = message.imageMessage?.mimetype || 'image/jpeg';
+      if (mimetype.includes('png')) return 'png';
+      if (mimetype.includes('gif')) return 'gif';
+      if (mimetype.includes('webp')) return 'webp';
+      return 'jpg';
+    }
+    
+    if (messageType === 'video') {
+      const mimetype = message.videoMessage?.mimetype || 'video/mp4';
+      if (mimetype.includes('webm')) return 'webm';
+      if (mimetype.includes('avi')) return 'avi';
+      return 'mp4';
+    }
+    
+    if (messageType === 'audio') {
+      const mimetype = message.audioMessage?.mimetype || 'audio/ogg';
+      if (mimetype.includes('mp3')) return 'mp3';
+      if (mimetype.includes('wav')) return 'wav';
+      return 'ogg';
+    }
+    
+    if (messageType === 'document') {
+      const fileName = message.documentMessage?.fileName || 'document';
+      const extension = path.extname(fileName).slice(1);
+      return extension || 'bin';
+    }
+    
+    if (messageType === 'sticker') {
+      return 'webp';
+    }
+    
+    return 'bin';
+  }
+
+  // Get MIME type based on message type and content
+  getMimeType(messageType, message) {
+    if (messageType === 'image') {
+      return message.imageMessage?.mimetype || 'image/jpeg';
+    }
+    
+    if (messageType === 'video') {
+      return message.videoMessage?.mimetype || 'video/mp4';
+    }
+    
+    if (messageType === 'audio') {
+      return message.audioMessage?.mimetype || 'audio/ogg';
+    }
+    
+    if (messageType === 'document') {
+      return message.documentMessage?.mimetype || 'application/octet-stream';
+    }
+    
+    if (messageType === 'sticker') {
+      return message.stickerMessage?.mimetype || 'image/webp';
+    }
+    
+    return 'application/octet-stream';
   }
 }
 

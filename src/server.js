@@ -23,6 +23,9 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Serve media files
+app.use('/media', express.static('media'));
+
 // Create sessions directory if it doesn't exist
 const sessionsDir = process.env.WHATSAPP_SESSION_PATH || './sessions';
 if (!fs.existsSync(sessionsDir)) {

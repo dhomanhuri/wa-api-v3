@@ -11,6 +11,7 @@
     "test:full": "node run-tests.js",
     "test:fixed": "node test-api-fixed.js diagnostics",
     "test:webhook": "node test-webhook.js",
+    "test:media-webhook": "node test-media-webhook.js",
     "debug": "node debug-whatsapp.js init",
     "debug:status": "node debug-whatsapp.js status",
     "debug:test": "node debug-whatsapp.js test"
