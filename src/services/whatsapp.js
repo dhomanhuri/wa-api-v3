@@ -20,12 +20,27 @@ class WhatsAppService {
     this.sessionPath = process.env.WHATSAPP_SESSION_PATH || './sessions';
     this.logger = whatsappLogger;
     this.webhookService = new WebhookService();
+    this.reconnectCount = 0;
+    this.maxReconnectDelay = 30000; // Max 30 seconds
   }
 
   async initialize() {
     try {
+      // Ensure session directory exists
+      if (!fs.existsSync(this.sessionPath)) {
+        fs.mkdirSync(this.sessionPath, { recursive: true });
+      }
+
       const { state, saveCreds } = await useMultiFileAuthState(this.sessionPath);
-      const { version, isLatest } = await fetchLatestBaileysVersion();
+      
+      let version;
+      try {
+        const latest = await fetchLatestBaileysVersion();
+        version = latest.version;
+      } catch (err) {
+        this.logger.warn('Failed to fetch latest Baileys version, using default:', err.message);
+        version = [2, 3000, 1015901307]; // Fallback version
+      }
       
       this.sock = makeWASocket({
         version,
@@ -54,6 +69,16 @@ class WhatsAppService {
       };
     } catch (error) {
       this.logger.error('Failed to initialize WhatsApp service:', error);
+      
+      // If initialization fails, it might be due to corrupt session files
+      // Try clearing the session and initializing again once
+      if (!this._retryCount || this._retryCount < 1) {
+        this._retryCount = (this._retryCount || 0) + 1;
+        this.logger.info('Attempting to clear session and re-initialize...');
+        this.clearSession();
+        return this.initialize();
+      }
+      
       throw error;
     }
   }
@@ -69,19 +94,40 @@ class WhatsAppService {
       }
       
       if (connection === 'close') {
-        const shouldReconnect = (lastDisconnect?.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+        const error = lastDisconnect?.error;
+        const statusCode = error?.output?.statusCode || error?.data?.statusCode || error?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        
+        this.logger.info({ statusCode, error: error?.message }, `Connection closed. Reconnecting: ${shouldReconnect}`);
         
         if (shouldReconnect) {
-          console.log('🔄 Reconnecting...');
-          this.initialize();
+          this.reconnectCount++;
+          const delay = Math.min(Math.pow(2, this.reconnectCount) * 1000, this.maxReconnectDelay);
+          
+          console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${this.reconnectCount})`);
+          setTimeout(() => {
+            this.initialize();
+          }, delay);
         } else {
-          console.log('❌ Connection closed. Please scan QR code again.');
+          console.log('❌ Connection closed. Session invalidated or logged out. Please scan QR code again.');
           this.isConnected = false;
+          this.qrCode = null;
+          this.reconnectCount = 0;
+          
+          // Clear session on logout/invalid session
+          this.clearSession();
+          
+          // Send webhook for disconnection
+          this.webhookService.sendConnectionStatusWebhook(false).catch(err => {
+            this.logger.error('Failed to send disconnection webhook:', err.message);
+          });
         }
       } else if (connection === 'open') {
         console.log('✅ WhatsApp connected successfully!');
         this.isConnected = true;
         this.qrCode = null;
+        this.reconnectCount = 0;
+        this._retryCount = 0; // Reset initialize retry count
         
         // Send webhook for connection status
         this.webhookService.sendConnectionStatusWebhook(true).catch(err => {
@@ -364,17 +410,40 @@ class WhatsAppService {
     }
   }
 
+  clearSession() {
+    try {
+      if (fs.existsSync(this.sessionPath)) {
+        const sessionFiles = fs.readdirSync(this.sessionPath);
+        sessionFiles.forEach(file => {
+          try {
+            const filePath = path.join(this.sessionPath, file);
+            if (fs.lstatSync(filePath).isFile()) {
+              fs.unlinkSync(filePath);
+            } else if (fs.lstatSync(filePath).isDirectory()) {
+              fs.rmSync(filePath, { recursive: true, force: true });
+            }
+          } catch (err) {
+            this.logger.error(`Failed to delete session file ${file}:`, err.message);
+          }
+        });
+        this.logger.info('Session directory cleared');
+      }
+    } catch (error) {
+      this.logger.error('Failed to clear session directory:', error.message);
+    }
+  }
+
   async logout() {
     try {
       if (this.sock) {
-        await this.sock.logout();
+        try {
+          await this.sock.logout();
+        } catch (err) {
+          this.logger.error('Error during sock.logout():', err.message);
+        }
         this.isConnected = false;
         
-        // Clear session files
-        const sessionFiles = fs.readdirSync(this.sessionPath);
-        sessionFiles.forEach(file => {
-          fs.unlinkSync(path.join(this.sessionPath, file));
-        });
+        this.clearSession();
         
         return {
           success: true,
